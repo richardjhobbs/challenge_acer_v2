@@ -7,7 +7,7 @@ export default function HowToPlay() {
           <b>Register:</b> pick a nickname, add a private email, and select an age band. No real names.
         </div>
         <div>
-          <b>Daily set:</b> you get 10 challenges per day. Each round is one attempt.
+          <b>Daily set:</b> you get 5 challenges per day. Each round is one attempt.
         </div>
         <div>
           <b>Reveal:</b> choose the large-number count, then click <b>Reveal round</b> to flip the six tiles and roll the
@@ -28,7 +28,7 @@ export default function HowToPlay() {
           runs out.
         </div>
         <div>
-          <b>Scoring:</b> accuracy + time bonus per round. Ten rounds combine into today&apos;s score.
+          <b>Scoring:</b> accuracy + time bonus per round. Five rounds combine into today&apos;s score.
         </div>
       </div>
     </details>

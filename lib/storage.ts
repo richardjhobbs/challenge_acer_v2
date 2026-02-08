@@ -67,7 +67,7 @@ export function recordDailyChallenge(profile: UserProfile, dateKey: string, chal
   const index = scores.findIndex((item) => item.dateKey === dateKey && item.username === profile.username);
   if (index >= 0) {
     const existing = scores[index];
-    const nextChallenges = [...existing.challengeScores, challenge].slice(0, 10);
+    const nextChallenges = [...existing.challengeScores, challenge].slice(0, 5);
     const totalScore = nextChallenges.reduce((sum, item) => sum + item.score, 0);
     scores[index] = {
       ...existing,

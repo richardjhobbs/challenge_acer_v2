@@ -27,15 +27,8 @@ const DEFAULT_DIGITS = [
 ];
 
 const AGE_BANDS: AgeBand[] = ['Under 8', '8–10', '11–13', '14–16', '16+'];
-const DAILY_LIMIT = 10;
+const DAILY_LIMIT = 5;
 const FIXED_TIMER = 60;
-
-// Round payload shape for future server sync (tiles, target, optional seed).
-const roundPayloadNote = {
-  tiles: 'tiles',
-  target: 'target',
-  seed: 'seed'
-};
 
 const buildDateKey = (date: Date) => {
   const year = date.getFullYear();
@@ -109,6 +102,8 @@ export default function AcerChallengeGame() {
     timeRemaining: number;
     bestSolution: BestSolution | null;
   } | null>(null);
+  const [typedBestSteps, setTypedBestSteps] = useState('');
+  const [showDailyCompleteModal, setShowDailyCompleteModal] = useState(false);
 
   const todayKey = useMemo(() => buildDateKey(new Date()), []);
 
@@ -118,6 +113,9 @@ export default function AcerChallengeGame() {
   const revealAbortRef = useRef(false);
   const hasUserGestureRef = useRef(false);
   const welcomeSpokenRef = useRef(false);
+  const lastGoAnnouncedRef = useRef(false);
+  const typingTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const readyVoiceTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const phaseRef = useRef<GamePhase>(phase);
 
   const isRevealing = phase === 'REVEALING_TILES';
@@ -338,6 +336,58 @@ export default function AcerChallengeGame() {
     revealAbortRef.current = true;
   }, [stopTimer]);
 
+  useEffect(() => {
+    if (typingTimeoutRef.current) {
+      clearTimeout(typingTimeoutRef.current);
+      typingTimeoutRef.current = null;
+    }
+    if (readyVoiceTimeoutRef.current) {
+      clearTimeout(readyVoiceTimeoutRef.current);
+      readyVoiceTimeoutRef.current = null;
+    }
+
+    if (!roundResult?.bestSolution) {
+      setTypedBestSteps('');
+      return;
+    }
+
+    const fullText = roundResult.bestSolution.steps.length
+      ? roundResult.bestSolution.steps.join('\n')
+      : 'No steps available.';
+    let index = 0;
+    setTypedBestSteps('');
+
+    const tick = () => {
+      index += 1;
+      setTypedBestSteps(fullText.slice(0, index));
+      if (index < fullText.length) {
+        typingTimeoutRef.current = setTimeout(tick, 200);
+      } else {
+        readyVoiceTimeoutRef.current = setTimeout(() => {
+          announce('Ready for the next round');
+        }, 2000);
+      }
+    };
+
+    if (fullText.length) {
+      typingTimeoutRef.current = setTimeout(tick, 200);
+    } else {
+      readyVoiceTimeoutRef.current = setTimeout(() => {
+        announce('Ready for the next round');
+      }, 2000);
+    }
+    return () => {
+      if (typingTimeoutRef.current) {
+        clearTimeout(typingTimeoutRef.current);
+        typingTimeoutRef.current = null;
+      }
+      if (readyVoiceTimeoutRef.current) {
+        clearTimeout(readyVoiceTimeoutRef.current);
+        readyVoiceTimeoutRef.current = null;
+      }
+    };
+  }, [announce, roundResult?.bestSolution]);
+
   const referenceDate = useMemo(() => parseDateKey(todayKey), [todayKey]);
 
   const userScoresByPeriod = useMemo(() => {
@@ -429,10 +479,15 @@ export default function AcerChallengeGame() {
       const large = shuffle(rng, LARGE_POOL).slice(0, largeCount);
       const small = shuffle(rng, SMALL_POOL).slice(0, smallCount);
 
-      return shuffle(rng, [
-        ...large.map((value) => ({ value, kind: 'large' as const })),
-        ...small.map((value) => ({ value, kind: 'small' as const }))
-      ]).map((tile) => ({
+      const orderedTiles = [
+        ...large.map((value, index) => ({ value, kind: 'large' as const, order: index })),
+        ...small.map((value, index) => ({ value, kind: 'small' as const, order: index }))
+      ].sort((a, b) => {
+        const kindScore = (kind: 'large' | 'small') => (kind === 'large' ? 0 : 1);
+        return kindScore(a.kind) - kindScore(b.kind) || a.order - b.order;
+      });
+
+      return orderedTiles.map((tile) => ({
         id: createTileId(),
         value: tile.value,
         kind: tile.kind,
@@ -603,6 +658,11 @@ export default function AcerChallengeGame() {
           submittedAt: Date.now()
         });
         setDailyScores(updated);
+        const updatedToday = updated.find((item) => item.dateKey === todayKey && item.username === profile.username);
+        const updatedCount = updatedToday?.challengeScores.length ?? 0;
+        if (updatedCount >= DAILY_LIMIT) {
+          setShowDailyCompleteModal(true);
+        }
       }
       handleEndOfRoundEffects(options.exact, { skipBuzzer: options.skipBuzzer });
     },
@@ -784,6 +844,10 @@ export default function AcerChallengeGame() {
   const revealRoundWithInput = (largeCount: number) => {
     registerUserGesture();
     if (!canRevealRound) return;
+    if (challengesCompleted === DAILY_LIMIT - 1 && !lastGoAnnouncedRef.current) {
+      announce('and this is your last go today. Make sure you come back tomorrow.');
+      lastGoAnnouncedRef.current = true;
+    }
     void revealRound(largeCount);
   };
 
@@ -804,7 +868,7 @@ export default function AcerChallengeGame() {
       // no-op
     }
     if (!welcomeSpokenRef.current) {
-      announce("Welcome to Acer Challenge. Ten rounds per day, sixty seconds each. Good luck.");
+      announce("Welcome to Acer Challenge. Five rounds per day, sixty seconds each. Good luck.");
       welcomeSpokenRef.current = true;
     }
   };
@@ -825,7 +889,7 @@ export default function AcerChallengeGame() {
         <div>
           <h1>Acer Challenge</h1>
           <div className="muted">
-            Daily Countdown-inspired numbers challenge. Register once, then play 10 timed rounds per day.
+            Daily numbers challenge. Register once, then play 5 timed rounds per day.
           </div>
         </div>
         <div className="topbarRight">
@@ -921,12 +985,14 @@ export default function AcerChallengeGame() {
                 <label>Age band</label>
                 <div className="controlValue">{profile.ageBand}</div>
               </div>
-              <div>
-                <label>Daily challenges</label>
-                <div className="controlValue">
-                  {challengesCompleted} / {DAILY_LIMIT}
+              <div className="controlStack">
+                <div className="controlGroup">
+                  <label>Daily challenges</label>
+                  <div className="controlValue">
+                    {challengesCompleted} / {DAILY_LIMIT}
+                  </div>
                 </div>
-                <div className="smallNote">Daily score: {dailyTotalScore}</div>
+                <div className="smallNote dailyScoreNote">Daily score: {dailyTotalScore}</div>
               </div>
               <div>
                 <label>Timer</label>
@@ -994,15 +1060,17 @@ export default function AcerChallengeGame() {
                         – Points scored: {roundResult.points}
                       </div>
                       <div style={{ height: 12 }} />
-                      <div className="bestAnswerLabel">The Best Answer is</div>
+                      <div className="bestAnswerLabel">
+                        {roundResult.bestSolution?.diff === 0 ? 'Correct answer' : 'The Best Answer is'}
+                      </div>
                       {roundResult.bestSolution ? (
                         <>
-                          <div className="bestAnswerValue">{roundResult.bestSolution.value}</div>
-                          <div className="bestAnswerSteps">
-                            {roundResult.bestSolution.steps.length
-                              ? roundResult.bestSolution.steps.join('\n')
-                              : 'No steps available.'}
+                          <div
+                            className={`bestAnswerValue${roundResult.bestSolution.diff === 0 ? ' isExact' : ''}`}
+                          >
+                            {roundResult.bestSolution.value}
                           </div>
+                          <div className="bestAnswerSteps">{typedBestSteps}</div>
                         </>
                       ) : (
                         <div className="muted">Best answer will appear here after the round.</div>
@@ -1085,10 +1153,16 @@ export default function AcerChallengeGame() {
         )}
       </div>
 
-      <div className="smallNote">
-        Multiplayer readiness: seed-based RNG hooks and round payload shape ({roundPayloadNote.tiles},{' '}
-        {roundPayloadNote.target},{' '}{roundPayloadNote.seed}) are ready for server sync and validation.
-      </div>
+      {showDailyCompleteModal ? (
+        <div className="modalOverlay" role="dialog" aria-modal="true">
+          <div className="modalCard">
+            <p>Thanks for challenging Acer. See you tomorrow.</p>
+            <button type="button" onClick={() => setShowDailyCompleteModal(false)}>
+              OK
+            </button>
+          </div>
+        </div>
+      ) : null}
     </>
   );
 }
