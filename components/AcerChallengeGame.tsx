@@ -8,9 +8,10 @@ import { applyOperation, scoreForDiff } from '@/lib/rules';
 import { computeBestSolution } from '@/lib/solver';
 import {
   clearProfile,
-  loadAcerBenchmark,
+  getMockAcerBenchmark,
   loadDailyScores,
   loadProfile,
+  readAcerBenchmark,
   recordDailyChallenge,
   saveProfile
 } from '@/lib/storage';
@@ -279,7 +280,12 @@ export default function AcerChallengeGame() {
   const challengesCompleted = todayRecord?.challengeScores.length ?? 0;
   const dailyTotalScore = todayRecord?.totalScore ?? 0;
   const dailyLimitReached = challengesCompleted >= DAILY_LIMIT;
-  const acerBenchmarkScore = useMemo(() => loadAcerBenchmark(todayKey), [todayKey]);
+  const acerStoredScore = useMemo(() => readAcerBenchmark(todayKey), [todayKey]);
+  const acerBenchmarkScore = useMemo(
+    () => acerStoredScore ?? getMockAcerBenchmark(todayKey),
+    [acerStoredScore, todayKey]
+  );
+  const acerScoreLabel = acerStoredScore !== null ? String(acerStoredScore) : 'pending';
   const canRevealRound =
     Boolean(profile) && !dailyLimitReached && !roundActive && !isRevealing && !isTargetRolling;
   const isLocked = lockedUntil ? lockedUntil.getTime() > Date.now() : false;
@@ -590,21 +596,17 @@ export default function AcerChallengeGame() {
   const userScoresByPeriod = useMemo(() => {
     if (!profile) {
       return {
-        personal: null,
         today: null,
         week: null,
-        month: null,
-        all: null
+        month: null
       };
     }
     const userEntries = dailyScores.filter((item) => item.username === profile.username);
     if (!userEntries.length) {
       return {
-        personal: null,
         today: null,
         week: null,
-        month: null,
-        all: null
+        month: null
       };
     }
 
@@ -619,14 +621,10 @@ export default function AcerChallengeGame() {
     const monthTotal = userEntries
       .filter((item) => isDateInRange(item.dateKey, monthStart, monthEnd))
       .reduce((sum, item) => sum + item.totalScore, 0);
-    const allTotal = userEntries.reduce((sum, item) => sum + item.totalScore, 0);
-
     return {
-      personal: weekTotal,
       today: todayEntry?.totalScore ?? null,
       week: weekTotal,
-      month: monthTotal,
-      all: allTotal
+      month: monthTotal
     };
   }, [dailyScores, profile, referenceDate, todayKey]);
 
@@ -659,13 +657,11 @@ export default function AcerChallengeGame() {
   }, [dailyScores, referenceDate]);
 
   const buildLeaderboard = useCallback(
-    (period: 'personal' | 'today' | 'week' | 'month' | 'all') => {
+    (period: 'today' | 'week' | 'month') => {
       const periodMultiplier = {
-        personal: 4.2,
         today: 1,
         week: 4.2,
-        month: 12.5,
-        all: 32
+        month: 12.5
       } as const;
       const mockEntries: LeaderboardEntry[] = MOCK_PLAYERS.map((player) => ({
         name: player.name,
@@ -1378,7 +1374,7 @@ export default function AcerChallengeGame() {
                   <div className="leaderboardHeader">
                     <div>
                       <b>Leaderboards</b>
-                      <div className="smallNote">Acer benchmark is shown as a reference line only.</div>
+                      <div className="smallNote">Acer’s Score today is {acerScoreLabel}</div>
                     </div>
                     <div>
                       <label htmlFor="ageFilter">Age band filter</label>
@@ -1398,16 +1394,11 @@ export default function AcerChallengeGame() {
                   </div>
                   <div className="leaderboardGrid">
                     {[
-                      {
-                        key: 'personal',
-                        label: `Personal best (week of ${getISODateKey(startOfWeekUTC(referenceDate))})`
-                      },
                       { key: 'today', label: 'Today' },
                       { key: 'week', label: 'This week' },
-                      { key: 'month', label: 'This month' },
-                      { key: 'all', label: 'All time' }
+                      { key: 'month', label: 'This month' }
                     ].map((section) => {
-                      const entries = buildLeaderboard(section.key as 'personal' | 'today' | 'week' | 'month' | 'all');
+                      const entries = buildLeaderboard(section.key as 'today' | 'week' | 'month');
                       return (
                         <div key={section.key} className="leaderboardSection">
                           <div className="leaderboardTitle">{section.label}</div>
@@ -1440,7 +1431,7 @@ export default function AcerChallengeGame() {
                       <div>
                         <b>WINNERS</b>
                         <div className="smallNote">
-                          Weekly and 4-week snapshots are cached after each period ends.
+                          Weekly and 4-weekly leaders
                         </div>
                       </div>
                     </div>
