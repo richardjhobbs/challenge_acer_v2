@@ -4,7 +4,7 @@ import type { ReactNode } from 'react';
 
 export const metadata: Metadata = {
   title: 'Acer Challenge',
-  description: 'Pick your numbers, reveal the tiles, reveal the target, then the clock auto-starts after 10 seconds.',
+  description: 'Daily Countdown-style numbers challenge with 10 timed rounds and leaderboards.',
   icons: {
     icon: [
       { url: '/favicon.ico' },

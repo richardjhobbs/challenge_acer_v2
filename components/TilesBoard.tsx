@@ -4,6 +4,7 @@ interface TilesBoardProps {
   tiles: Tile[];
   selectedIds: string[];
   lockedId: string | null;
+  interactionEnabled: boolean;
   onTileClick: (id: string) => void;
   hint: string;
   canPickOperator: boolean;
@@ -17,6 +18,7 @@ export default function TilesBoard({
   tiles,
   selectedIds,
   lockedId,
+  interactionEnabled,
   onTileClick,
   hint,
   canPickOperator,
@@ -40,7 +42,11 @@ export default function TilesBoard({
               <div className="card">
                 <div className="face front" />
                 <div className="face back">
-                  <button type="button" onClick={() => onTileClick(tile.id)}>
+                  <button
+                    type="button"
+                    disabled={!interactionEnabled || !tile.revealed}
+                    onClick={() => onTileClick(tile.id)}
+                  >
                     {tile.value}
                   </button>
                 </div>

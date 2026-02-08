@@ -7,11 +7,11 @@ export default function LandingPage() {
         <div>
           <h1>Acer Challenge</h1>
           <div className="muted">
-            Pick your numbers, reveal the tiles, reveal the target, then the clock auto-starts after 10 seconds.
+            Register once, then play 10 timed rounds per day to post a daily score.
           </div>
         </div>
         <div className="topbarRight">
-          <div className="muted">Solo or online play coming soon.</div>
+          <div className="muted">Desktop-only daily challenge experience.</div>
           <img
             className="headerLogo"
             src="/images/acer-can-winner-logo.png"
@@ -25,8 +25,8 @@ export default function LandingPage() {
         <div>
           <h2 style={{ margin: 0 }}>Welcome to Acer Challenge</h2>
           <p className="muted">
-            Test your arithmetic under pressure. Reveal the tiles, lock in a target, and race the timer with
-            solver-backed scoring.
+            Test your arithmetic under pressure. Register a nickname, tackle today&apos;s 10 puzzles, and compare your
+            score against the Acer benchmark.
           </p>
         </div>
 
