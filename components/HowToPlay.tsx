@@ -4,31 +4,30 @@ export default function HowToPlay() {
       <summary>How to play</summary>
       <div className="howto muted">
         <div>
-          <b>Register:</b> pick a nickname, add a private email, and select an age band. No real names.
+          <b>Register:</b> pick a nickname, add a private email, select an age band. No real names.
         </div>
         <div>
-          <b>Daily set:</b> you get 5 challenges per day. Each round is one attempt.
+          <b>Daily set:</b> 5 challenges per day, one attempt each.
         </div>
         <div>
-          <b>Reveal:</b> choose the large-number count, then click <b>Reveal round</b> to flip the six tiles and roll the
-          3-digit target.
+          <b>Reveal:</b> choose large-number count, click <b>Reveal round</b> to flip tiles and roll a 3-digit target.
         </div>
         <div>
-          <b>Step mode:</b> pick a revealed number, choose an operation (+, -, ×, ÷), then pick the next number. The result
-          becomes a new tile. Each tile can be used once per step.
+          <b>Step mode:</b> pick a revealed number, choose operation (+, -, ×, ÷), pick next number. Each tile used once per
+          step.
         </div>
         <div>
-          <b>Constraints:</b> intermediate results must be positive integers, division must be exact, no concatenation.
+          <b>Constraints:</b> intermediate results must be positive integers. Division must be exact. No concatenation.
         </div>
         <div>
-          <b>Timer:</b> the 60-second timer starts automatically after the target locks. Input stays locked until then.
+          <b>Timer:</b> 60-second timer starts automatically after target locks, input remains locked until then.
         </div>
         <div>
-          <b>Finish:</b> select the tile you want as your final answer, then press <b>Lock in your answer</b> before time
+          <b>Finish:</b> pick the tile you want as your final answer, then press <b>Lock in your answer</b> before time
           runs out.
         </div>
         <div>
-          <b>Scoring:</b> accuracy + time bonus per round. Five rounds combine into today&apos;s score.
+          <b>Scoring:</b> accuracy + time bonus per round. 5 rounds combine into today&apos;s score.
         </div>
       </div>
     </details>

@@ -520,6 +520,12 @@ button:disabled{ opacity:.55; cursor:not-allowed; }
   font-size: 12px;
 }
 
+.formNotice{
+  color: var(--muted);
+  font-size: 12px;
+  margin-top: 10px;
+}
+
 .leaderboardPanel{
   display: flex;
   flex-direction: column;
@@ -635,7 +641,7 @@ th{ color: var(--muted); text-align:left; font-weight: 700; }
 }
 
 .exactValue{
-  color: var(--danger);
+  color: var(--ok);
   font-weight: 700;
 }
 
@@ -683,6 +689,93 @@ summary{ cursor:pointer; color: var(--text); font-weight: 800; }
 
 .modalCard p{
   margin: 0 0 16px;
+}
+
+.modalActions{
+  display:flex;
+  gap: 10px;
+  justify-content: center;
+  flex-wrap: wrap;
+}
+
+.winnersPanel{
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.winnersBlock{
+  border-top: 1px solid rgba(255,255,255,.08);
+  padding-top: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.winnersTitle{
+  font-weight: 800;
+  font-size: 14px;
+}
+
+.podium{
+  display:grid;
+  grid-template-columns: 1fr 1.2fr 1fr;
+  gap: 10px;
+  align-items:end;
+}
+
+.podiumSlot{
+  border: 1px solid rgba(255,255,255,.12);
+  border-radius: 12px;
+  padding: 10px;
+  text-align: center;
+  background: rgba(0,0,0,.18);
+}
+
+.podiumSlot.gold{
+  background: rgba(255,215,0,.12);
+}
+
+.podiumSlot.silver{
+  background: rgba(192,192,192,.12);
+}
+
+.podiumSlot.bronze{
+  background: rgba(205,127,50,.12);
+}
+
+.medal{
+  font-size: 20px;
+}
+
+.podiumName{
+  font-weight: 700;
+}
+
+.podiumScore{
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.winnersGroups{
+  display:grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 12px;
+}
+
+.winnersGroupTitle{
+  font-weight: 700;
+  margin-bottom: 6px;
+}
+
+.winnersList{
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  font-size: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
 }
 
 .landing{
