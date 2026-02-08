@@ -1,16 +1,14 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import HowToPlay from '@/components/HowToPlay';
-import HistoryTable from '@/components/HistoryTable';
 import TargetDisplay from '@/components/TargetDisplay';
 import TilesBoard from '@/components/TilesBoard';
 import { applyOperation, scoreForDiff } from '@/lib/rules';
-import { computeBestSolution } from '@/lib/solver';
-import { clearHistory, loadHistory, saveHistory } from '@/lib/storage';
+import { loadAcerBenchmark, loadDailyScores, loadProfile, recordDailyChallenge, saveProfile } from '@/lib/storage';
 import { createSeededRng, randInt, shuffle } from '@/lib/rng';
 import { isSpeechSupported, pickVoice, speakText } from '@/lib/voice';
-import type { BestSolution, GamePhase, HistoryItem, Operation, Tile } from '@/lib/types';
+import type { AgeBand, DailyScore, GamePhase, Operation, Tile, UserProfile } from '@/lib/types';
 
 const LARGE_POOL = [25, 50, 75, 100];
 const SMALL_POOL = Array.from({ length: 10 }, (_, i) => i + 1).flatMap((n) => [n, n]);
@@ -27,12 +25,51 @@ const DEFAULT_DIGITS = [
   { value: '-', locked: false }
 ];
 
+const AGE_BANDS: AgeBand[] = ['Under 8', '8–10', '11–13', '14–16', '16+'];
+const DAILY_LIMIT = 10;
+const FIXED_TIMER = 60;
+
 // Round payload shape for future server sync (tiles, target, optional seed).
 const roundPayloadNote = {
   tiles: 'tiles',
   target: 'target',
   seed: 'seed'
 };
+
+const buildDateKey = (date: Date) => {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+};
+
+const parseDateKey = (dateKey: string) => {
+  const [year, month, day] = dateKey.split('-').map((part) => Number(part));
+  return new Date(year, month - 1, day);
+};
+
+const startOfWeek = (date: Date) => {
+  const start = new Date(date);
+  const day = start.getDay();
+  const diff = (day === 0 ? -6 : 1) - day;
+  start.setDate(start.getDate() + diff);
+  start.setHours(0, 0, 0, 0);
+  return start;
+};
+
+const startOfMonth = (date: Date) => {
+  const start = new Date(date.getFullYear(), date.getMonth(), 1);
+  start.setHours(0, 0, 0, 0);
+  return start;
+};
+
+const MOCK_PLAYERS: Array<{ name: string; ageBand: AgeBand; baseScore: number }> = [
+  { name: 'Nova', ageBand: '11–13', baseScore: 320 },
+  { name: 'Rook', ageBand: '14–16', baseScore: 290 },
+  { name: 'Echo', ageBand: '8–10', baseScore: 240 },
+  { name: 'Quill', ageBand: '16+', baseScore: 355 },
+  { name: 'Pulse', ageBand: '14–16', baseScore: 270 }
+];
 
 export default function AcerChallengeGame() {
   const rng = useMemo(() => createSeededRng(), []);
@@ -48,36 +85,43 @@ export default function AcerChallengeGame() {
   const [target, setTarget] = useState<number | null>(null);
   const [digits, setDigits] = useState(DEFAULT_DIGITS);
   const [targetHint, setTargetHint] = useState('Reveal the round to generate a target.');
-  const [timerMode, setTimerMode] = useState(30);
   const [largeCount, setLargeCount] = useState(1);
   const [timeRemaining, setTimeRemaining] = useState<number | null>(null);
   const [timerHint, setTimerHint] = useState('Timer starts automatically after the target reveal.');
-  const [bestAnswer, setBestAnswer] = useState<BestSolution | null>(null);
-  const [historyItems, setHistoryItems] = useState<HistoryItem[]>([]);
   const [voice, setVoice] = useState<SpeechSynthesisVoice | null>(null);
-  const [typedBestSteps, setTypedBestSteps] = useState('');
   const [hasStarted, setHasStarted] = useState(false);
+  const [profile, setProfile] = useState<UserProfile | null>(null);
+  const [dailyScores, setDailyScores] = useState<DailyScore[]>([]);
+  const [ageFilter, setAgeFilter] = useState<'All' | AgeBand>('All');
+  const [registrationData, setRegistrationData] = useState({
+    username: '',
+    email: '',
+    ageBand: AGE_BANDS[4]
+  });
+  const [registrationError, setRegistrationError] = useState<string | null>(null);
   const [roundResult, setRoundResult] = useState<{
     didSubmit: boolean;
     userFinalValue: number | null;
     points: number;
+    accuracyScore: number;
+    timeScore: number;
+    timeRemaining: number;
   } | null>(null);
 
+  const todayKey = useMemo(() => buildDateKey(new Date()), []);
+
   const timerRef = useRef<NodeJS.Timeout | null>(null);
-  const autoStartTimeoutRef = useRef<NodeJS.Timeout | null>(null);
-  const typingRef = useRef<NodeJS.Timeout | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
   const rafRef = useRef<number | null>(null);
   const revealAbortRef = useRef(false);
   const hasUserGestureRef = useRef(false);
   const welcomeSpokenRef = useRef(false);
   const phaseRef = useRef<GamePhase>(phase);
-  const lockedIdRef = useRef<string | null>(null);
-  const autoStartCancelledRef = useRef(false);
 
   const isRevealing = phase === 'REVEALING_TILES';
   const isTargetRolling = phase === 'TARGET_ROLLING';
   const roundActive = phase !== 'IDLE' && phase !== 'ENDED';
+  const canInteract = phase === 'RUNNING';
 
   const selectedIds = useMemo(() => {
     const ids: string[] = [];
@@ -85,17 +129,13 @@ export default function AcerChallengeGame() {
     if (pendingSecondId) ids.push(pendingSecondId);
     return ids;
   }, [pendingFirstId, pendingSecondId]);
-  const canPickOperator = roundActive && !isRevealing && !isTargetRolling && pendingFirstId !== null;
-  const canLockIn = roundActive && !isRevealing && !isTargetRolling && pendingFirstId !== null && pendingOp === null;
+  const canPickOperator = canInteract && pendingFirstId !== null;
+  const canLockIn = canInteract && pendingFirstId !== null && pendingOp === null;
   const canBack =
-    roundActive &&
-    !isRevealing &&
-    !isTargetRolling &&
+    canInteract &&
     (pendingFirstId !== null || pendingOp !== null || appliedSteps.length > 0);
   const canReset =
-    roundActive &&
-    !isRevealing &&
-    !isTargetRolling &&
+    canInteract &&
     (pendingFirstId !== null || pendingOp !== null || appliedSteps.length > 0 || workLines.length > 0);
   const workMeta = roundActive ? `Tiles remaining: ${tiles.length}` : '';
 
@@ -103,19 +143,30 @@ export default function AcerChallengeGame() {
     if (!roundActive) return 'Click “Reveal round” to begin.';
     if (isRevealing) return 'Revealing tiles...';
     if (isTargetRolling) return 'Generating target...';
+    if (!canInteract) return 'Timer starting...';
     if (!pendingFirstId) return 'Pick a number';
     if (!pendingOp) return 'Pick an operator';
     return 'Pick the next number';
-  }, [roundActive, isRevealing, isTargetRolling, pendingFirstId, pendingOp]);
+  }, [roundActive, isRevealing, isTargetRolling, canInteract, pendingFirstId, pendingOp]);
 
   const timeDisplay = useMemo(() => {
     if (timeRemaining === null) return '--';
-    if (timerMode === 0) return 'Unlimited';
     const sec = Math.max(timeRemaining, 0);
     const m = Math.floor(sec / 60);
     const s = sec % 60;
     return m > 0 ? `${m}:${String(s).padStart(2, '0')}` : `${s}s`;
-  }, [timeRemaining, timerMode]);
+  }, [timeRemaining]);
+
+  const todayRecord = useMemo(
+    () => dailyScores.find((item) => item.dateKey === todayKey && item.username === profile?.username),
+    [dailyScores, profile?.username, todayKey]
+  );
+  const challengesCompleted = todayRecord?.challengeScores.length ?? 0;
+  const dailyTotalScore = todayRecord?.totalScore ?? 0;
+  const dailyLimitReached = challengesCompleted >= DAILY_LIMIT;
+  const acerBenchmarkScore = useMemo(() => loadAcerBenchmark(todayKey), [todayKey]);
+  const canRevealRound =
+    Boolean(profile) && !dailyLimitReached && !roundActive && !isRevealing && !isTargetRolling;
 
   const announce = useCallback(
     (text: string) => {
@@ -134,6 +185,36 @@ export default function AcerChallengeGame() {
     [voice]
   );
 
+  const validateRegistration = useCallback(() => {
+    if (!registrationData.username.trim()) return 'Username is required.';
+    if (!/^[a-zA-Z0-9_]{3,16}$/.test(registrationData.username.trim())) {
+      return 'Username must be 3–16 characters with letters, numbers, or underscores only.';
+    }
+    if (!registrationData.email.trim() || !registrationData.email.includes('@')) {
+      return 'Email must be valid.';
+    }
+    if (!registrationData.ageBand) return 'Select an age band.';
+    return null;
+  }, [registrationData]);
+
+  const handleRegisterSubmit = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const error = validateRegistration();
+    if (error) {
+      setRegistrationError(error);
+      return;
+    }
+    const nextProfile: UserProfile = {
+      username: registrationData.username.trim(),
+      email: registrationData.email.trim(),
+      ageBand: registrationData.ageBand,
+      createdAt: Date.now()
+    };
+    saveProfile(nextProfile);
+    setProfile(nextProfile);
+    setRegistrationError(null);
+  };
+
   const resetTarget = useCallback(() => {
     if (rafRef.current) {
       cancelAnimationFrame(rafRef.current);
@@ -149,14 +230,6 @@ export default function AcerChallengeGame() {
       clearInterval(timerRef.current);
       timerRef.current = null;
     }
-  }, []);
-
-  const clearAutoStartTimer = useCallback(() => {
-    if (autoStartTimeoutRef.current) {
-      clearTimeout(autoStartTimeoutRef.current);
-      autoStartTimeoutRef.current = null;
-    }
-    autoStartCancelledRef.current = true;
   }, []);
 
   const registerUserGesture = useCallback(() => {
@@ -236,29 +309,8 @@ export default function AcerChallengeGame() {
   );
 
   useEffect(() => {
-    if (typingRef.current) {
-      clearInterval(typingRef.current);
-      typingRef.current = null;
-    }
-    if (!bestAnswer) {
-      setTypedBestSteps('');
-      return;
-    }
-    const fullText = bestAnswer.steps.length ? bestAnswer.steps.join('\n') : '—';
-    setTypedBestSteps('');
-    let index = 0;
-    typingRef.current = setInterval(() => {
-      index += 1;
-      setTypedBestSteps(fullText.slice(0, index));
-      if (index >= fullText.length && typingRef.current) {
-        clearInterval(typingRef.current);
-        typingRef.current = null;
-      }
-    }, 200);
-  }, [bestAnswer]);
-
-  useEffect(() => {
-    setHistoryItems(loadHistory());
+    setProfile(loadProfile());
+    setDailyScores(loadDailyScores());
     if (!isSpeechSupported()) {
       return;
     }
@@ -278,23 +330,85 @@ export default function AcerChallengeGame() {
     phaseRef.current = phase;
   }, [phase]);
 
-  useEffect(() => {
-    lockedIdRef.current = lockedId;
-  }, [lockedId]);
-
   useEffect(() => () => {
     stopTimer();
-    if (autoStartTimeoutRef.current) {
-      clearTimeout(autoStartTimeoutRef.current);
-      autoStartTimeoutRef.current = null;
-    }
-    if (typingRef.current) {
-      clearInterval(typingRef.current);
-      typingRef.current = null;
-    }
     if (rafRef.current) cancelAnimationFrame(rafRef.current);
     revealAbortRef.current = true;
   }, [stopTimer]);
+
+  const referenceDate = useMemo(() => parseDateKey(todayKey), [todayKey]);
+
+  const userScoresByPeriod = useMemo(() => {
+    if (!profile) {
+      return {
+        personal: null,
+        today: null,
+        week: null,
+        month: null,
+        all: null
+      };
+    }
+    const userEntries = dailyScores.filter((item) => item.username === profile.username);
+    if (!userEntries.length) {
+      return {
+        personal: null,
+        today: null,
+        week: null,
+        month: null,
+        all: null
+      };
+    }
+
+    const todayEntry = userEntries.find((item) => item.dateKey === todayKey);
+    const personal = Math.max(...userEntries.map((item) => item.totalScore));
+    const weekStart = startOfWeek(referenceDate);
+    const monthStart = startOfMonth(referenceDate);
+    const weekTotal = userEntries
+      .filter((item) => parseDateKey(item.dateKey) >= weekStart)
+      .reduce((sum, item) => sum + item.totalScore, 0);
+    const monthTotal = userEntries
+      .filter((item) => parseDateKey(item.dateKey) >= monthStart)
+      .reduce((sum, item) => sum + item.totalScore, 0);
+    const allTotal = userEntries.reduce((sum, item) => sum + item.totalScore, 0);
+
+    return {
+      personal,
+      today: todayEntry?.totalScore ?? null,
+      week: weekTotal,
+      month: monthTotal,
+      all: allTotal
+    };
+  }, [dailyScores, profile, referenceDate, todayKey]);
+
+  const buildLeaderboard = useCallback(
+    (period: 'personal' | 'today' | 'week' | 'month' | 'all') => {
+      const periodMultiplier = {
+        personal: 1.1,
+        today: 1,
+        week: 4.2,
+        month: 12.5,
+        all: 32
+      } as const;
+      const mockEntries = MOCK_PLAYERS.map((player) => ({
+        name: player.name,
+        ageBand: player.ageBand,
+        score: Math.round(player.baseScore * periodMultiplier[period])
+      }));
+      const entries = [...mockEntries];
+      const userScore = userScoresByPeriod[period];
+      if (profile && typeof userScore === 'number') {
+        entries.push({
+          name: profile.username,
+          ageBand: profile.ageBand,
+          score: userScore,
+          isUser: true
+        });
+      }
+      const filtered = entries.filter((entry) => ageFilter === 'All' || entry.ageBand === ageFilter);
+      return filtered.sort((a, b) => b.score - a.score).slice(0, 5);
+    },
+    [ageFilter, profile, userScoresByPeriod]
+  );
 
   const createTileId = useCallback(() => {
     if (typeof crypto !== 'undefined' && 'getRandomValues' in crypto) {
@@ -369,7 +483,7 @@ export default function AcerChallengeGame() {
 
   const handleTileClick = (id: string) => {
     registerUserGesture();
-    if (!roundActive || isRevealing || isTargetRolling) return;
+    if (!canInteract) return;
     const tile = tiles.find((item) => item.id === id);
     if (!tile || !tile.revealed) return;
 
@@ -431,7 +545,6 @@ export default function AcerChallengeGame() {
     registerUserGesture();
     if (!canReset) return;
     if (!tilesAtStart.length) return;
-    clearAutoStartTimer();
     setTiles(tilesAtStart.map((tile) => ({ ...tile, revealed: true })));
     setWorkLines([]);
     setAppliedSteps([]);
@@ -441,15 +554,6 @@ export default function AcerChallengeGame() {
     setLockedId(null);
   };
 
-  const computeBest = useCallback(
-    (sourceTiles: Tile[], targetValue: number) => {
-      const best = computeBestSolution(sourceTiles.map((tile) => tile.value), targetValue);
-      setBestAnswer(best);
-      return best;
-    },
-    []
-  );
-
   const endRound = useCallback(
     (options: {
       didSubmit: boolean;
@@ -457,50 +561,41 @@ export default function AcerChallengeGame() {
       points: number;
       exact: boolean;
       skipBuzzer?: boolean;
+      accuracyScore: number;
+      timeScore: number;
+      timeRemaining: number;
+      diff: number;
     }) => {
       stopTimer();
-      clearAutoStartTimer();
       setPhase('ENDED');
       setRoundResult({
         didSubmit: options.didSubmit,
         userFinalValue: options.userFinalValue,
-        points: options.points
+        points: options.points,
+        accuracyScore: options.accuracyScore,
+        timeScore: options.timeScore,
+        timeRemaining: options.timeRemaining
       });
 
       if (target === null) {
         handleEndOfRoundEffects(options.exact, { skipBuzzer: options.skipBuzzer });
         return;
       }
-
-      const best = computeBest(tilesAtStart.length ? tilesAtStart : tiles, target);
-      const outcome = options.didSubmit ? 'OK' : 'FAIL';
-
-      saveHistory({
-        ts: Date.now(),
-        tilesAtStart: tilesAtStart.map((tile) => tile.value),
-        target,
-        userFinalValue: options.userFinalValue,
-        userSteps: workLines.slice(),
-        bestFinalValue: best ? best.value : null,
-        bestSteps: best ? best.steps : [],
-        points: options.points,
-        didSubmit: options.didSubmit,
-        outcome
-      });
-
-      setHistoryItems(loadHistory());
+      if (profile) {
+        const updated = recordDailyChallenge(profile, todayKey, {
+          score: options.points,
+          accuracyScore: options.accuracyScore,
+          timeScore: options.timeScore,
+          diff: options.diff,
+          exact: options.exact,
+          timeRemaining: options.timeRemaining,
+          submittedAt: Date.now()
+        });
+        setDailyScores(updated);
+      }
       handleEndOfRoundEffects(options.exact, { skipBuzzer: options.skipBuzzer });
     },
-    [
-      clearAutoStartTimer,
-      computeBest,
-      handleEndOfRoundEffects,
-      stopTimer,
-      target,
-      tiles,
-      tilesAtStart,
-      workLines
-    ]
+    [handleEndOfRoundEffects, profile, stopTimer, target, todayKey]
   );
 
   const lockInAnswer = () => {
@@ -511,34 +606,57 @@ export default function AcerChallengeGame() {
 
     setLockedId(selected.id);
     const diff = Math.abs(target - selected.value);
-    const points = scoreForDiff(diff);
+    const remaining = timeRemaining ?? 0;
+    const accuracyScore = scoreForDiff(diff) * 10;
+    const timeScore = Math.max(0, Math.round((remaining / FIXED_TIMER) * 10));
+    const points = accuracyScore + timeScore;
 
     endRound({
       didSubmit: true,
       userFinalValue: selected.value,
       points,
-      exact: diff === 0
+      exact: diff === 0,
+      accuracyScore,
+      timeScore,
+      timeRemaining: remaining,
+      diff
     });
   };
 
   const handleTimeUp = useCallback(() => {
     playBuzzer();
+    if (target === null) return;
+    const closest = tiles.reduce<{ value: number; diff: number } | null>((best, tile) => {
+      if (!tile.revealed) return best;
+      const diff = Math.abs(target - tile.value);
+      if (!best || diff < best.diff) {
+        return { value: tile.value, diff };
+      }
+      return best;
+    }, null);
+    const diff = closest ? closest.diff : Math.abs(target);
+    const remaining = 0;
+    const accuracyScore = scoreForDiff(diff) * 10;
+    const timeScore = 0;
+    const points = accuracyScore + timeScore;
     endRound({
-      didSubmit: false,
-      userFinalValue: null,
-      points: 0,
-      exact: false,
+      didSubmit: true,
+      userFinalValue: closest ? closest.value : null,
+      points,
+      exact: diff === 0,
+      accuracyScore,
+      timeScore,
+      timeRemaining: remaining,
+      diff,
       skipBuzzer: true
     });
-  }, [endRound, playBuzzer]);
+  }, [endRound, playBuzzer, target, tiles]);
 
   const startTimer = () => {
-    if (phaseRef.current !== 'READY') return;
+    if (phaseRef.current === 'RUNNING' || phaseRef.current === 'ENDED') return;
     setPhase('RUNNING');
-    setTimeRemaining(timerMode);
-    setTimerHint(timerMode === 0 ? 'Unlimited' : 'Timer running');
-
-    if (timerMode === 0) return;
+    setTimeRemaining(FIXED_TIMER);
+    setTimerHint('Timer running');
     stopTimer();
     timerRef.current = setInterval(() => {
       setTimeRemaining((prev) => {
@@ -620,17 +738,15 @@ export default function AcerChallengeGame() {
   );
 
   const revealRound = async (largeCount: number) => {
-    if (isRevealing || isTargetRolling) return;
+    if (isRevealing || isTargetRolling || roundActive) return;
     revealAbortRef.current = false;
 
     const smallCount = 6 - largeCount;
     announce(`That’s ${largeCount} large and ${smallCount} small numbers`);
 
     stopTimer();
-    clearAutoStartTimer();
     setTimeRemaining(null);
-    setTimerHint('Timer starts automatically after the target reveal.');
-    setBestAnswer(null);
+    setTimerHint('Timer will start after the target locks.');
     setRoundResult(null);
     setPendingFirstId(null);
     setPendingOp(null);
@@ -658,20 +774,15 @@ export default function AcerChallengeGame() {
     const finalTarget = await rollTargetAndFix();
     announce(String(finalTarget));
     setPhase('READY');
-    announce('Timer starts in 10 seconds');
-    setTimerHint('Timer starts in 10 seconds.');
-    setTargetHint('Timer starts automatically after the reveal.');
-    autoStartCancelledRef.current = false;
-    if (autoStartTimeoutRef.current) clearTimeout(autoStartTimeoutRef.current);
-    autoStartTimeoutRef.current = setTimeout(() => {
-      if (autoStartCancelledRef.current) return;
-      if (phaseRef.current === 'ENDED' || lockedIdRef.current) return;
-      startTimer();
-    }, 10000);
+    announce('Timer is live');
+    setTimerHint('Timer running');
+    setTargetHint('Timer started. Lock in your answer.');
+    startTimer();
   };
 
   const revealRoundWithInput = (largeCount: number) => {
     registerUserGesture();
+    if (!canRevealRound) return;
     void revealRound(largeCount);
   };
 
@@ -692,20 +803,10 @@ export default function AcerChallengeGame() {
       // no-op
     }
     if (!welcomeSpokenRef.current) {
-      announce("Welcome to Challenge Acer. Can you beat him? Choose how many large numbers and let's go.");
+      announce("Welcome to Acer Challenge. Ten rounds per day, sixty seconds each. Good luck.");
       welcomeSpokenRef.current = true;
     }
   };
-
-  const handleClearHistory = () => {
-    clearHistory();
-    setHistoryItems([]);
-  };
-
-  const resultAnswerText =
-    roundResult === null ? '—' : roundResult.didSubmit ? String(roundResult.userFinalValue ?? '—') : 'FAIL!';
-  const resultPointsText =
-    roundResult === null ? '—' : roundResult.didSubmit ? String(roundResult.points) : '0';
 
   return (
     <>
@@ -724,7 +825,7 @@ export default function AcerChallengeGame() {
         <div>
           <h1>Acer Challenge</h1>
           <div className="muted">
-            Pick your numbers, reveal the tiles, reveal the target, then the clock auto-starts after 10 seconds.
+            Daily Countdown-inspired numbers challenge. Register once, then play 10 timed rounds per day.
           </div>
         </div>
         <div className="topbarRight">
@@ -738,111 +839,219 @@ export default function AcerChallengeGame() {
       </div>
 
       <div className="stage">
-        <div className="controls">
-          <div>
-            <label htmlFor="largeCount">Large numbers (0–4)</label>
-            <select id="largeCount" value={largeCount} onChange={(event) => setLargeCount(Number(event.target.value))}>
-              <option value={0}>0</option>
-              <option value={1}>1</option>
-              <option value={2}>2</option>
-              <option value={3}>3</option>
-              <option value={4}>4</option>
-            </select>
-          </div>
-          <div>
-            <label htmlFor="smallCount">Small numbers (auto so total = 6)</label>
-            <input id="smallCount" type="number" value={6 - largeCount} disabled />
-          </div>
-          <div>
-            <label htmlFor="timerMode">Timer</label>
-            <select id="timerMode" value={timerMode} onChange={(event) => setTimerMode(Number(event.target.value))}>
-              <option value={30}>30 seconds</option>
-              <option value={60}>60 seconds</option>
-              <option value={0}>Unlimited</option>
-            </select>
-          </div>
+        {!profile ? (
+          <div className="registrationPane">
+            <div className="registrationCard">
+              <h2>Create your challenge ID</h2>
+              <p className="muted">
+                Usernames are public, email stays private. No real names, no social profiles, and no chat.
+              </p>
+              <form className="registrationForm" onSubmit={handleRegisterSubmit}>
+                <label htmlFor="username">Username</label>
+                <input
+                  id="username"
+                  type="text"
+                  autoComplete="off"
+                  placeholder="Nickname only"
+                  value={registrationData.username}
+                  onChange={(event) =>
+                    setRegistrationData((prev) => ({ ...prev, username: event.target.value }))
+                  }
+                />
 
-          <div className="rowRight">
-            <button id="newRoundBtn" onClick={() => revealRoundWithInput(largeCount)}>
-              Reveal round
-            </button>
-            <button id="backBtn" className="btnGhost" disabled={!canBack} onClick={handleBack}>
-              Back
-            </button>
-            <button id="resetWorkBtn" className="btnGhost" disabled={!canReset} onClick={handleReset}>
-              Reset work
-            </button>
-          </div>
-        </div>
+                <label htmlFor="email">Email (private)</label>
+                <input
+                  id="email"
+                  type="email"
+                  autoComplete="off"
+                  placeholder="you@example.com"
+                  value={registrationData.email}
+                  onChange={(event) =>
+                    setRegistrationData((prev) => ({ ...prev, email: event.target.value }))
+                  }
+                />
 
-        <div className="arena">
-          <div className="displayRow">
-            <div className="topRow">
-              <TargetDisplay digits={digits} hint={targetHint} />
-
-              <div className="box timerBox">
-                <div className="muted">Time</div>
-                <div className="led">
-                  <span>{timeDisplay}</span>
-                </div>
-                <div className="smallNote">{timerHint}</div>
-              </div>
-            </div>
-
-            <TilesBoard
-              tiles={tiles}
-              selectedIds={selectedIds}
-              lockedId={lockedId}
-              onTileClick={handleTileClick}
-              hint={pickHint}
-              canPickOperator={canPickOperator}
-              pendingOp={pendingOp}
-              onOperation={handleOperation}
-              canLockIn={canLockIn}
-              onLockIn={lockInAnswer}
-            />
-          </div>
-
-          <div className="statusRow">
-            <div className="statusBox">
-              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
-                <b>Working</b>
-                <span className="muted">{workMeta}</span>
-              </div>
-              <div style={{ height: 10 }} />
-              <div className="workArea">{workLines.length ? workLines.join('\n') : 'No steps yet.'}</div>
-            </div>
-
-            <div className="statusBox">
-              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
-                <b>Result of this round!</b>
-              </div>
-              <div style={{ height: 10 }} />
-              <div>Your answer: {resultAnswerText} , Points scored: {resultPointsText}</div>
-              <div style={{ height: 10 }} />
-              <div style={{ fontWeight: 800 }}>The Best Answer:</div>
-              <div style={{ marginTop: 12 }}>
-                <div className="good" style={{ fontSize: '2em', fontWeight: 800 }}>
-                  {bestAnswer ? bestAnswer.value : '---'}
-                </div>
-
-                <div
-                  className="mono good"
-                  style={{
-                    whiteSpace: 'pre-wrap',
-                    fontSize: '2em',
-                    marginTop: 8,
-                  }}
+                <label htmlFor="ageBand">Age band</label>
+                <select
+                  id="ageBand"
+                  value={registrationData.ageBand}
+                  onChange={(event) =>
+                    setRegistrationData((prev) => ({ ...prev, ageBand: event.target.value as AgeBand }))
+                  }
                 >
-                  {bestAnswer ? typedBestSteps : '---'}
-                </div>
-              </div>
+                  {AGE_BANDS.map((band) => (
+                    <option key={band} value={band}>
+                      {band}
+                    </option>
+                  ))}
+                </select>
+
+                {registrationError ? <div className="formError">{registrationError}</div> : null}
+                <button type="submit">Register</button>
+              </form>
             </div>
           </div>
+        ) : (
+          <>
+            <div className="controls">
+              <div>
+                <label htmlFor="largeCount">Large numbers (0–4)</label>
+                <select
+                  id="largeCount"
+                  value={largeCount}
+                  onChange={(event) => setLargeCount(Number(event.target.value))}
+                  disabled={roundActive}
+                >
+                  <option value={0}>0</option>
+                  <option value={1}>1</option>
+                  <option value={2}>2</option>
+                  <option value={3}>3</option>
+                  <option value={4}>4</option>
+                </select>
+              </div>
+              <div>
+                <label htmlFor="smallCount">Small numbers</label>
+                <input id="smallCount" type="number" value={6 - largeCount} disabled />
+              </div>
+              <div>
+                <label>Player</label>
+                <div className="controlValue">{profile.username}</div>
+              </div>
+              <div>
+                <label>Age band</label>
+                <div className="controlValue">{profile.ageBand}</div>
+              </div>
+              <div>
+                <label>Daily challenges</label>
+                <div className="controlValue">
+                  {challengesCompleted} / {DAILY_LIMIT}
+                </div>
+                <div className="smallNote">Daily score: {dailyTotalScore}</div>
+              </div>
+              <div>
+                <label>Timer</label>
+                <div className="controlValue">60 seconds (fixed)</div>
+              </div>
 
-          <HistoryTable items={historyItems} onClear={handleClearHistory} />
-          <HowToPlay />
-        </div>
+              <div className="rowRight">
+                <button id="newRoundBtn" disabled={!canRevealRound} onClick={() => revealRoundWithInput(largeCount)}>
+                  {dailyLimitReached ? 'Daily limit reached' : roundActive ? 'Round in progress' : 'Reveal round'}
+                </button>
+                <button id="backBtn" className="btnGhost" disabled={!canBack} onClick={handleBack}>
+                  Back
+                </button>
+                <button id="resetWorkBtn" className="btnGhost" disabled={!canReset} onClick={handleReset}>
+                  Reset work
+                </button>
+              </div>
+              <div className="controlNote">
+                {roundResult
+                  ? `Last round: ${roundResult.userFinalValue ?? '—'} · ${roundResult.points} pts (accuracy ${roundResult.accuracyScore}, time ${roundResult.timeScore})`
+                  : 'Complete a round to log your first score.'}
+              </div>
+            </div>
+
+            <div className="arena">
+              <div className="displayRow">
+                <div className="topRow">
+                  <TargetDisplay digits={digits} hint={targetHint} />
+
+                  <div className="box timerBox">
+                    <div className="muted">Time</div>
+                    <div className="led">
+                      <span>{timeDisplay}</span>
+                    </div>
+                    <div className="smallNote">{timerHint}</div>
+                  </div>
+                </div>
+
+                <TilesBoard
+                  tiles={tiles}
+                  selectedIds={selectedIds}
+                  lockedId={lockedId}
+                  interactionEnabled={canInteract}
+                  onTileClick={handleTileClick}
+                  hint={pickHint}
+                  canPickOperator={canPickOperator}
+                  pendingOp={pendingOp}
+                  onOperation={handleOperation}
+                  canLockIn={canLockIn}
+                  onLockIn={lockInAnswer}
+                />
+              </div>
+
+              <div className="statusRow">
+                <div className="statusBox">
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
+                    <b>Working</b>
+                    <span className="muted">{workMeta}</span>
+                  </div>
+                  <div style={{ height: 10 }} />
+                  <div className="workArea">{workLines.length ? workLines.join('\n') : 'No steps yet.'}</div>
+                </div>
+
+                <div className="statusBox leaderboardPanel">
+                  <div className="leaderboardHeader">
+                    <div>
+                      <b>Leaderboards</b>
+                      <div className="smallNote">Acer benchmark is shown as a reference line only.</div>
+                    </div>
+                    <div>
+                      <label htmlFor="ageFilter">Age band filter</label>
+                      <select
+                        id="ageFilter"
+                        value={ageFilter}
+                        onChange={(event) => setAgeFilter(event.target.value as 'All' | AgeBand)}
+                      >
+                        <option value="All">All age bands</option>
+                        {AGE_BANDS.map((band) => (
+                          <option key={band} value={band}>
+                            {band}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  </div>
+                  <div className="leaderboardGrid">
+                    {[
+                      { key: 'personal', label: 'Personal best' },
+                      { key: 'today', label: 'Today' },
+                      { key: 'week', label: 'This week' },
+                      { key: 'month', label: 'This month' },
+                      { key: 'all', label: 'All time' }
+                    ].map((section) => {
+                      const entries = buildLeaderboard(section.key as 'personal' | 'today' | 'week' | 'month' | 'all');
+                      return (
+                        <div key={section.key} className="leaderboardSection">
+                          <div className="leaderboardTitle">{section.label}</div>
+                          <ol className="leaderboardList">
+                            {entries.length ? (
+                              entries.map((entry, index) => (
+                                <li
+                                  key={`${section.key}-${entry.name}`}
+                                  className={`leaderboardEntry${entry.isUser ? ' isUser' : ''}`}
+                                >
+                                  <span className="leaderboardRank">{index + 1}.</span>
+                                  <span className="leaderboardName">{entry.name}</span>
+                                  <span className="leaderboardScore">{entry.score}</span>
+                                </li>
+                              ))
+                            ) : (
+                              <li className="leaderboardEmpty">No scores yet.</li>
+                            )}
+                          </ol>
+                        </div>
+                      );
+                    })}
+                  </div>
+                  <div className="benchmarkLine">Acer benchmark today: {acerBenchmarkScore}</div>
+                </div>
+              </div>
+
+              <HowToPlay />
+            </div>
+          </>
+        )}
       </div>
 
       <div className="smallNote">

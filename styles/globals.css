@@ -442,6 +442,128 @@ button:disabled{ opacity:.55; cursor:not-allowed; }
   box-shadow: inset 0 0 0 1px rgba(255,255,255,.04);
 }
 
+.controlValue{
+  font-weight: 700;
+  padding: 8px 12px;
+  border-radius: 10px;
+  border: 1px solid rgba(255,255,255,.14);
+  background: rgba(255,255,255,.06);
+  min-width: 140px;
+}
+
+.controlNote{
+  flex-basis: 100%;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.registrationPane{
+  padding: 24px;
+  display: flex;
+  justify-content: center;
+}
+
+.registrationCard{
+  width: min(520px, 100%);
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: rgba(0,0,0,.22);
+  padding: 24px;
+  box-shadow: var(--shadow);
+}
+
+.registrationForm{
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-top: 16px;
+}
+
+.formError{
+  color: var(--danger);
+  font-size: 12px;
+}
+
+.leaderboardPanel{
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.leaderboardHeader{
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.leaderboardGrid{
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 12px;
+}
+
+.leaderboardSection{
+  border: 1px solid rgba(255,255,255,.08);
+  border-radius: 12px;
+  padding: 10px;
+  background: rgba(0,0,0,.12);
+}
+
+.leaderboardTitle{
+  font-weight: 700;
+  font-size: 13px;
+  margin-bottom: 6px;
+}
+
+.leaderboardList{
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.leaderboardEntry{
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 12px;
+  padding: 4px 6px;
+  border-radius: 8px;
+  background: rgba(0,0,0,.18);
+}
+
+.leaderboardEntry.isUser{
+  background: rgba(90,167,255,.25);
+  border: 1px solid rgba(90,167,255,.4);
+}
+
+.leaderboardRank{
+  color: var(--muted);
+  margin-right: 6px;
+}
+
+.leaderboardName{
+  flex: 1;
+}
+
+.leaderboardScore{
+  font-weight: 700;
+}
+
+.leaderboardEmpty{
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.benchmarkLine{
+  font-size: 12px;
+  color: var(--muted);
+}
+
 .workArea{
   border-radius: 12px;
   border: 1px solid rgba(255,255,255,.14);
