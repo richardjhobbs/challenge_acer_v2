@@ -5,10 +5,11 @@ import HowToPlay from '@/components/HowToPlay';
 import TargetDisplay from '@/components/TargetDisplay';
 import TilesBoard from '@/components/TilesBoard';
 import { applyOperation, scoreForDiff } from '@/lib/rules';
+import { computeBestSolution } from '@/lib/solver';
 import { loadAcerBenchmark, loadDailyScores, loadProfile, recordDailyChallenge, saveProfile } from '@/lib/storage';
 import { createSeededRng, randInt, shuffle } from '@/lib/rng';
 import { isSpeechSupported, pickVoice, speakText } from '@/lib/voice';
-import type { AgeBand, DailyScore, GamePhase, Operation, Tile, UserProfile } from '@/lib/types';
+import type { AgeBand, BestSolution, DailyScore, GamePhase, LeaderboardEntry, Operation, Tile, UserProfile } from '@/lib/types';
 
 const LARGE_POOL = [25, 50, 75, 100];
 const SMALL_POOL = Array.from({ length: 10 }, (_, i) => i + 1).flatMap((n) => [n, n]);
@@ -106,6 +107,7 @@ export default function AcerChallengeGame() {
     accuracyScore: number;
     timeScore: number;
     timeRemaining: number;
+    bestSolution: BestSolution | null;
   } | null>(null);
 
   const todayKey = useMemo(() => buildDateKey(new Date()), []);
@@ -389,7 +391,7 @@ export default function AcerChallengeGame() {
         month: 12.5,
         all: 32
       } as const;
-      const mockEntries = MOCK_PLAYERS.map((player) => ({
+      const mockEntries: LeaderboardEntry[] = MOCK_PLAYERS.map((player) => ({
         name: player.name,
         ageBand: player.ageBand,
         score: Math.round(player.baseScore * periodMultiplier[period])
@@ -405,7 +407,7 @@ export default function AcerChallengeGame() {
         });
       }
       const filtered = entries.filter((entry) => ageFilter === 'All' || entry.ageBand === ageFilter);
-      return filtered.sort((a, b) => b.score - a.score).slice(0, 5);
+      return filtered.sort((a, b) => b.score - a.score).slice(0, 10);
     },
     [ageFilter, profile, userScoresByPeriod]
   );
@@ -564,9 +566,17 @@ export default function AcerChallengeGame() {
       accuracyScore: number;
       timeScore: number;
       timeRemaining: number;
-      diff: number;
+      diff?: number;
     }) => {
       stopTimer();
+      const bestSolution =
+        target !== null && tilesAtStart.length
+          ? computeBestSolution(
+              tilesAtStart.map((tile) => tile.value),
+              target
+            )
+          : null;
+      const diff = options.diff ?? (bestSolution ? bestSolution.diff : target ? Math.abs(target) : 0);
       setPhase('ENDED');
       setRoundResult({
         didSubmit: options.didSubmit,
@@ -574,7 +584,8 @@ export default function AcerChallengeGame() {
         points: options.points,
         accuracyScore: options.accuracyScore,
         timeScore: options.timeScore,
-        timeRemaining: options.timeRemaining
+        timeRemaining: options.timeRemaining,
+        bestSolution
       });
 
       if (target === null) {
@@ -586,7 +597,7 @@ export default function AcerChallengeGame() {
           score: options.points,
           accuracyScore: options.accuracyScore,
           timeScore: options.timeScore,
-          diff: options.diff,
+          diff,
           exact: options.exact,
           timeRemaining: options.timeRemaining,
           submittedAt: Date.now()
@@ -595,7 +606,7 @@ export default function AcerChallengeGame() {
       }
       handleEndOfRoundEffects(options.exact, { skipBuzzer: options.skipBuzzer });
     },
-    [handleEndOfRoundEffects, profile, stopTimer, target, todayKey]
+    [handleEndOfRoundEffects, profile, stopTimer, target, tilesAtStart, todayKey]
   );
 
   const lockInAnswer = () => {
@@ -626,31 +637,21 @@ export default function AcerChallengeGame() {
   const handleTimeUp = useCallback(() => {
     playBuzzer();
     if (target === null) return;
-    const closest = tiles.reduce<{ value: number; diff: number } | null>((best, tile) => {
-      if (!tile.revealed) return best;
-      const diff = Math.abs(target - tile.value);
-      if (!best || diff < best.diff) {
-        return { value: tile.value, diff };
-      }
-      return best;
-    }, null);
-    const diff = closest ? closest.diff : Math.abs(target);
     const remaining = 0;
-    const accuracyScore = scoreForDiff(diff) * 10;
+    const accuracyScore = 0;
     const timeScore = 0;
-    const points = accuracyScore + timeScore;
+    const points = 0;
     endRound({
-      didSubmit: true,
-      userFinalValue: closest ? closest.value : null,
+      didSubmit: false,
+      userFinalValue: null,
       points,
-      exact: diff === 0,
+      exact: false,
       accuracyScore,
       timeScore,
       timeRemaining: remaining,
-      diff,
       skipBuzzer: true
     });
-  }, [endRound, playBuzzer, target, tiles]);
+  }, [endRound, playBuzzer, target]);
 
   const startTimer = () => {
     if (phaseRef.current === 'RUNNING' || phaseRef.current === 'ENDED') return;
@@ -812,13 +813,12 @@ export default function AcerChallengeGame() {
     <>
       {!hasStarted ? (
         <div className="startOverlay">
-          <div className="startOverlayCard">
-            <h2>Acer Challenge</h2>
-            <p className="muted">Tap Start for voice and sound</p>
-            <button type="button" onClick={handleStart}>
-              Start
-            </button>
-          </div>
+            <div className="startOverlayCard">
+              <h2>Acer Challenge</h2>
+              <button type="button" onClick={handleStart}>
+                Start
+              </button>
+            </div>
         </div>
       ) : null}
       <div className="topbar">
@@ -981,6 +981,37 @@ export default function AcerChallengeGame() {
               </div>
 
               <div className="statusRow">
+                <div className="statusBox resultPanel">
+                  <b>Result of this round!</b>
+                  <div style={{ height: 10 }} />
+                  {roundResult ? (
+                    <>
+                      <div>
+                        Your answer:{' '}
+                        {roundResult.didSubmit && roundResult.userFinalValue !== null
+                          ? roundResult.userFinalValue
+                          : 'FAIL!'}{' '}
+                        – Points scored: {roundResult.points}
+                      </div>
+                      <div style={{ height: 12 }} />
+                      <div className="bestAnswerLabel">The Best Answer is</div>
+                      {roundResult.bestSolution ? (
+                        <>
+                          <div className="bestAnswerValue">{roundResult.bestSolution.value}</div>
+                          <div className="bestAnswerSteps">
+                            {roundResult.bestSolution.steps.length
+                              ? roundResult.bestSolution.steps.join('\n')
+                              : 'No steps available.'}
+                          </div>
+                        </>
+                      ) : (
+                        <div className="muted">Best answer will appear here after the round.</div>
+                      )}
+                    </>
+                  ) : (
+                    <div className="muted">Complete a round to view the result and best answer.</div>
+                  )}
+                </div>
                 <div className="statusBox">
                   <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
                     <b>Working</b>
