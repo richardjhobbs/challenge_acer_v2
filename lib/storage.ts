@@ -89,14 +89,31 @@ export function recordDailyChallenge(profile: UserProfile, dateKey: string, chal
   return scores;
 }
 
-export function loadAcerBenchmark(dateKey: string): number {
-  if (typeof window === 'undefined') return 420;
+export function readAcerBenchmark(dateKey: string): number | null {
+  if (typeof window === 'undefined') return null;
   try {
     const raw = window.localStorage.getItem(ACER_BENCHMARK_KEY);
     const map = raw ? (JSON.parse(raw) as Record<string, number>) : {};
-    if (map[dateKey]) return map[dateKey];
-    const seed = dateKey.split('-').reduce((sum, part) => sum + Number(part), 0);
-    const score = 320 + (seed % 120);
+    const score = map[dateKey];
+    return typeof score === 'number' ? score : null;
+  } catch {
+    return null;
+  }
+}
+
+export function getMockAcerBenchmark(dateKey: string): number {
+  const seed = dateKey.split('-').reduce((sum, part) => sum + Number(part), 0);
+  return 320 + (seed % 120);
+}
+
+export function loadAcerBenchmark(dateKey: string): number {
+  if (typeof window === 'undefined') return 420;
+  const existing = readAcerBenchmark(dateKey);
+  if (typeof existing === 'number') return existing;
+  try {
+    const raw = window.localStorage.getItem(ACER_BENCHMARK_KEY);
+    const map = raw ? (JSON.parse(raw) as Record<string, number>) : {};
+    const score = getMockAcerBenchmark(dateKey);
     map[dateKey] = score;
     window.localStorage.setItem(ACER_BENCHMARK_KEY, JSON.stringify(map));
     return score;
