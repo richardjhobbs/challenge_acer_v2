@@ -7,7 +7,7 @@ export default function LandingPage() {
         <div>
           <h1>Acer Challenge</h1>
           <div className="muted">
-            Register once, then play 10 timed rounds per day to post a daily score.
+            Register once, then play 5 timed rounds per day to post a daily score.
           </div>
         </div>
         <div className="topbarRight">
@@ -25,7 +25,7 @@ export default function LandingPage() {
         <div>
           <h2 style={{ margin: 0 }}>Welcome to Acer Challenge</h2>
           <p className="muted">
-            Test your arithmetic under pressure. Register a nickname, tackle today&apos;s 10 puzzles, and compare your
+            Test your arithmetic under pressure. Register a nickname, tackle today&apos;s 5 puzzles, and compare your
             score against the Acer benchmark.
           </p>
         </div>
