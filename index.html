@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Number Operator Calculator</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <main class="calculator">
+      <header>
+        <h1>Number Operator Calculator</h1>
+        <p>Enter inputs in the natural order: number → operator → number.</p>
+      </header>
+
+      <section class="display">
+        <div class="display-row">
+          <span class="label">Inputs</span>
+          <span id="inputDisplay" class="value">None yet</span>
+        </div>
+      </section>
+
+      <section class="controls">
+        <div class="number-row" id="numberButtons">
+          <button type="button" data-number="1">1</button>
+          <button type="button" data-number="2">2</button>
+          <button type="button" data-number="3">3</button>
+          <button type="button" data-number="4">4</button>
+          <button type="button" data-number="5">5</button>
+          <button type="button" data-number="6">6</button>
+        </div>
+        <div class="operator-row" id="operatorButtons">
+          <button type="button" data-operator="+">+</button>
+          <button type="button" data-operator="-">-</button>
+          <button type="button" data-operator="×">×</button>
+          <button type="button" data-operator="÷">÷</button>
+        </div>
+        <div class="action-row">
+          <button type="button" id="backButton" class="secondary">Back</button>
+          <button type="button" id="clearButton" class="secondary">Clear All</button>
+        </div>
+      </section>
+
+      <section class="results">
+        <h2>Results</h2>
+        <p id="resultSummary">Enter a full expression to see the steps.</p>
+        <ol id="resultSteps"></ol>
+      </section>
+    </main>
+
+    <script src="app.js"></script>
+  </body>
+</html>
