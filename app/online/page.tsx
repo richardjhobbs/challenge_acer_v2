@@ -10,7 +10,7 @@ export default function OnlinePage() {
           <img
             className="headerLogo"
             src="/images/acer-can-winner-logo.png"
-            alt="Acer Challenge logo"
+            alt="Acer Challenge"
             loading="eager"
           />
         </div>

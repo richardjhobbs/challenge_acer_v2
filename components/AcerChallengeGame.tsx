@@ -6,7 +6,14 @@ import TargetDisplay from '@/components/TargetDisplay';
 import TilesBoard from '@/components/TilesBoard';
 import { applyOperation, scoreForDiff } from '@/lib/rules';
 import { computeBestSolution } from '@/lib/solver';
-import { loadAcerBenchmark, loadDailyScores, loadProfile, recordDailyChallenge, saveProfile } from '@/lib/storage';
+import {
+  clearProfile,
+  loadAcerBenchmark,
+  loadDailyScores,
+  loadProfile,
+  recordDailyChallenge,
+  saveProfile
+} from '@/lib/storage';
 import { createSeededRng, randInt, shuffle } from '@/lib/rng';
 import { isSpeechSupported, pickVoice, speakText } from '@/lib/voice';
 import type { AgeBand, BestSolution, DailyScore, GamePhase, LeaderboardEntry, Operation, Tile, UserProfile } from '@/lib/types';
@@ -20,6 +27,20 @@ interface AppliedStep {
   workLinesBefore: string[];
 }
 
+interface WinnerEntry {
+  name: string;
+  ageBand: AgeBand;
+  score: number;
+}
+
+interface PeriodWinners {
+  periodStart: string;
+  periodEnd: string;
+  overall: WinnerEntry | null;
+  overallTop: WinnerEntry[];
+  ageBands: Record<AgeBand, WinnerEntry[]>;
+}
+
 const DEFAULT_DIGITS = [
   { value: '-', locked: false },
   { value: '-', locked: false },
@@ -30,32 +51,54 @@ const AGE_BANDS: AgeBand[] = ['Under 8', '8–10', '11–13', '14–16', '16+'];
 const DAILY_LIMIT = 5;
 const FIXED_TIMER = 60;
 
-const buildDateKey = (date: Date) => {
-  const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, '0');
-  const day = String(date.getDate()).padStart(2, '0');
-  return `${year}-${month}-${day}`;
+const getISODateKey = (date: Date = new Date()) => date.toISOString().slice(0, 10);
+
+const parseDateKey = (dateKey: string) => new Date(`${dateKey}T00:00:00Z`);
+
+const startOfWeekUTC = (date: Date = new Date()) => {
+  const d = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()));
+  const day = d.getUTCDay() || 7;
+  d.setUTCDate(d.getUTCDate() - (day - 1));
+  d.setUTCHours(0, 0, 0, 0);
+  return d;
 };
 
-const parseDateKey = (dateKey: string) => {
-  const [year, month, day] = dateKey.split('-').map((part) => Number(part));
-  return new Date(year, month - 1, day);
+const startOfMonthUTC = (date: Date = new Date()) =>
+  new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), 1, 0, 0, 0));
+
+const startOf4WeekPeriodUTC = (date: Date = new Date()) => {
+  const dayMs = 24 * 60 * 60 * 1000;
+  const d = Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate());
+  const weeksSinceEpoch = Math.floor(d / (7 * dayMs) / 4);
+  return new Date(weeksSinceEpoch * 4 * 7 * dayMs);
 };
 
-const startOfWeek = (date: Date) => {
-  const start = new Date(date);
-  const day = start.getDay();
-  const diff = (day === 0 ? -6 : 1) - day;
-  start.setDate(start.getDate() + diff);
-  start.setHours(0, 0, 0, 0);
-  return start;
+const addDaysUTC = (date: Date, days: number) => {
+  const next = new Date(date);
+  next.setUTCDate(next.getUTCDate() + days);
+  return next;
 };
 
-const startOfMonth = (date: Date) => {
-  const start = new Date(date.getFullYear(), date.getMonth(), 1);
-  start.setHours(0, 0, 0, 0);
-  return start;
-};
+const LOCKED_UNTIL_KEY = 'acer_locked_until';
+
+function getNextMidnightUTC(): string {
+  const now = new Date();
+  const tomorrowUtc = new Date(
+    Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1, 0, 0, 0)
+  );
+  return tomorrowUtc.toISOString();
+}
+
+function setLockedUntilMidnightUTC() {
+  localStorage.setItem(LOCKED_UNTIL_KEY, getNextMidnightUTC());
+}
+
+function getLockedUntil(): Date | null {
+  const v = localStorage.getItem(LOCKED_UNTIL_KEY);
+  return v ? new Date(v) : null;
+}
+
+const formatUtcDateTime = (date: Date) => date.toUTCString();
 
 const MOCK_PLAYERS: Array<{ name: string; ageBand: AgeBand; baseScore: number }> = [
   { name: 'Nova', ageBand: '11–13', baseScore: 320 },
@@ -64,6 +107,71 @@ const MOCK_PLAYERS: Array<{ name: string; ageBand: AgeBand; baseScore: number }>
   { name: 'Quill', ageBand: '16+', baseScore: 355 },
   { name: 'Pulse', ageBand: '14–16', baseScore: 270 }
 ];
+
+const getMonthKey = (date: Date) =>
+  `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, '0')}`;
+
+const isDateInRange = (dateKey: string, start: Date, end: Date) => {
+  const date = parseDateKey(dateKey);
+  return date >= start && date < end;
+};
+
+const mockScoreForPeriod = (period: 'week' | 'month') => (period === 'week' ? 4.2 : 12.5);
+
+const buildPeriodTotals = (scores: DailyScore[], start: Date, end: Date, period: 'week' | 'month') => {
+  const totals = new Map<string, WinnerEntry>();
+  scores
+    .filter((item) => isDateInRange(item.dateKey, start, end))
+    .forEach((item) => {
+      const existing = totals.get(item.username);
+      const nextScore = (existing?.score ?? 0) + item.totalScore;
+      totals.set(item.username, {
+        name: item.username,
+        ageBand: item.ageBand,
+        score: nextScore
+      });
+    });
+  MOCK_PLAYERS.forEach((player) => {
+    if (!totals.has(player.name)) {
+      totals.set(player.name, {
+        name: player.name,
+        ageBand: player.ageBand,
+        score: Math.round(player.baseScore * mockScoreForPeriod(period))
+      });
+    }
+  });
+  return Array.from(totals.values());
+};
+
+const computePeriodWinners = (
+  scores: DailyScore[],
+  periodStart: Date,
+  periodEnd: Date,
+  period: 'week' | 'month'
+): PeriodWinners => {
+  const entries = buildPeriodTotals(scores, periodStart, periodEnd, period);
+  const overallTop = entries.sort((a, b) => b.score - a.score).slice(0, 3);
+  const ageBands = AGE_BANDS.reduce((acc, band) => {
+    acc[band] = entries.filter((entry) => entry.ageBand === band).sort((a, b) => b.score - a.score).slice(0, 3);
+    return acc;
+  }, {} as Record<AgeBand, WinnerEntry[]>);
+  return {
+    periodStart: getISODateKey(periodStart),
+    periodEnd: getISODateKey(periodEnd),
+    overall: overallTop[0] ?? null,
+    overallTop,
+    ageBands
+  };
+};
+
+const loadWinnersSnapshot = (key: string): PeriodWinners | null => {
+  try {
+    const raw = window.localStorage.getItem(key);
+    return raw ? (JSON.parse(raw) as PeriodWinners) : null;
+  } catch {
+    return null;
+  }
+};
 
 export default function AcerChallengeGame() {
   const rng = useMemo(() => createSeededRng(), []);
@@ -104,10 +212,17 @@ export default function AcerChallengeGame() {
   } | null>(null);
   const [typedBestSteps, setTypedBestSteps] = useState('');
   const [showDailyCompleteModal, setShowDailyCompleteModal] = useState(false);
+  const [showLogoutConfirm, setShowLogoutConfirm] = useState(false);
+  const [showInactivityModal, setShowInactivityModal] = useState(false);
+  const [lockedUntil, setLockedUntil] = useState<Date | null>(null);
+  const [statusMessage, setStatusMessage] = useState<string | null>(null);
+  const [weeklyWinners, setWeeklyWinners] = useState<PeriodWinners | null>(null);
+  const [monthlyWinners, setMonthlyWinners] = useState<PeriodWinners | null>(null);
 
-  const todayKey = useMemo(() => buildDateKey(new Date()), []);
+  const todayKey = useMemo(() => getISODateKey(new Date()), []);
 
   const timerRef = useRef<NodeJS.Timeout | null>(null);
+  const inactivityTimerRef = useRef<NodeJS.Timeout | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
   const rafRef = useRef<number | null>(null);
   const revealAbortRef = useRef(false);
@@ -167,6 +282,10 @@ export default function AcerChallengeGame() {
   const acerBenchmarkScore = useMemo(() => loadAcerBenchmark(todayKey), [todayKey]);
   const canRevealRound =
     Boolean(profile) && !dailyLimitReached && !roundActive && !isRevealing && !isTargetRolling;
+  const isLocked = lockedUntil ? lockedUntil.getTime() > Date.now() : false;
+  const lockMessage = isLocked
+    ? `Your account is locked until ${formatUtcDateTime(lockedUntil!)}. Please return after that.`
+    : null;
 
   const announce = useCallback(
     (text: string) => {
@@ -199,6 +318,12 @@ export default function AcerChallengeGame() {
 
   const handleRegisterSubmit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
+    const locked = getLockedUntil();
+    if (locked && locked.getTime() > Date.now()) {
+      setLockedUntil(locked);
+      setRegistrationError(`Your account is locked until ${formatUtcDateTime(locked)}. Please return after that.`);
+      return;
+    }
     const error = validateRegistration();
     if (error) {
       setRegistrationError(error);
@@ -213,6 +338,7 @@ export default function AcerChallengeGame() {
     saveProfile(nextProfile);
     setProfile(nextProfile);
     setRegistrationError(null);
+    setStatusMessage(null);
   };
 
   const resetTarget = useCallback(() => {
@@ -225,12 +351,48 @@ export default function AcerChallengeGame() {
     setTargetHint('Reveal the round to generate a target.');
   }, []);
 
+  const logout = useCallback(
+    (confirmed: boolean, message?: string) => {
+      if (!confirmed) {
+        setShowLogoutConfirm(true);
+        return;
+      }
+      clearProfile();
+      setProfile(null);
+      setShowLogoutConfirm(false);
+      setShowDailyCompleteModal(false);
+      setLockedUntilMidnightUTC();
+      const locked = getLockedUntil();
+      if (locked) {
+        setLockedUntil(locked);
+      }
+      if (message) {
+        setStatusMessage(message);
+      }
+    },
+    []
+  );
+
   const stopTimer = useCallback(() => {
     if (timerRef.current) {
       clearInterval(timerRef.current);
       timerRef.current = null;
     }
   }, []);
+
+  const resetInactivityTimer = useCallback(() => {
+    if (!profile) return;
+    if (inactivityTimerRef.current) {
+      clearTimeout(inactivityTimerRef.current);
+    }
+    inactivityTimerRef.current = setTimeout(() => {
+      setShowInactivityModal(true);
+      logout(
+        true,
+        'Logged out due to inactivity. You will be locked until midnight UTC.'
+      );
+    }, 10 * 60 * 1000);
+  }, [logout, profile]);
 
   const registerUserGesture = useCallback(() => {
     hasUserGestureRef.current = true;
@@ -309,8 +471,22 @@ export default function AcerChallengeGame() {
   );
 
   useEffect(() => {
-    setProfile(loadProfile());
-    setDailyScores(loadDailyScores());
+    const storedProfile = loadProfile();
+    const storedScores = loadDailyScores();
+    const locked = getLockedUntil();
+    if (locked && locked.getTime() > Date.now()) {
+      setLockedUntil(locked);
+      clearProfile();
+      setProfile(null);
+      setStatusMessage(`Your account is locked until ${formatUtcDateTime(locked)}. Please return after that.`);
+    } else if (locked) {
+      window.localStorage.removeItem(LOCKED_UNTIL_KEY);
+      setLockedUntil(null);
+      setProfile(storedProfile);
+    } else {
+      setProfile(storedProfile);
+    }
+    setDailyScores(storedScores);
     if (!isSpeechSupported()) {
       return;
     }
@@ -329,6 +505,27 @@ export default function AcerChallengeGame() {
   useEffect(() => {
     phaseRef.current = phase;
   }, [phase]);
+
+  useEffect(() => {
+    if (!profile) {
+      if (inactivityTimerRef.current) {
+        clearTimeout(inactivityTimerRef.current);
+        inactivityTimerRef.current = null;
+      }
+      return;
+    }
+    const handleActivity = () => resetInactivityTimer();
+    const events: Array<keyof WindowEventMap> = ['mousemove', 'keydown', 'click', 'touchstart'];
+    events.forEach((event) => window.addEventListener(event, handleActivity));
+    resetInactivityTimer();
+    return () => {
+      events.forEach((event) => window.removeEventListener(event, handleActivity));
+      if (inactivityTimerRef.current) {
+        clearTimeout(inactivityTimerRef.current);
+        inactivityTimerRef.current = null;
+      }
+    };
+  }, [profile, resetInactivityTimer]);
 
   useEffect(() => () => {
     stopTimer();
@@ -412,19 +609,20 @@ export default function AcerChallengeGame() {
     }
 
     const todayEntry = userEntries.find((item) => item.dateKey === todayKey);
-    const personal = Math.max(...userEntries.map((item) => item.totalScore));
-    const weekStart = startOfWeek(referenceDate);
-    const monthStart = startOfMonth(referenceDate);
+    const weekStart = startOfWeekUTC(referenceDate);
+    const weekEnd = addDaysUTC(weekStart, 7);
+    const monthStart = startOf4WeekPeriodUTC(referenceDate);
+    const monthEnd = addDaysUTC(monthStart, 28);
     const weekTotal = userEntries
-      .filter((item) => parseDateKey(item.dateKey) >= weekStart)
+      .filter((item) => isDateInRange(item.dateKey, weekStart, weekEnd))
       .reduce((sum, item) => sum + item.totalScore, 0);
     const monthTotal = userEntries
-      .filter((item) => parseDateKey(item.dateKey) >= monthStart)
+      .filter((item) => isDateInRange(item.dateKey, monthStart, monthEnd))
       .reduce((sum, item) => sum + item.totalScore, 0);
     const allTotal = userEntries.reduce((sum, item) => sum + item.totalScore, 0);
 
     return {
-      personal,
+      personal: weekTotal,
       today: todayEntry?.totalScore ?? null,
       week: weekTotal,
       month: monthTotal,
@@ -432,10 +630,38 @@ export default function AcerChallengeGame() {
     };
   }, [dailyScores, profile, referenceDate, todayKey]);
 
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const weekStart = startOfWeekUTC(referenceDate);
+    const weekEnd = addDaysUTC(weekStart, 7);
+    const monthStart = startOf4WeekPeriodUTC(referenceDate);
+    const monthEnd = addDaysUTC(monthStart, 28);
+    const weekKey = `winners.weekly.${getISODateKey(weekStart)}`;
+    const monthKey = `winners.monthly.${getMonthKey(monthStart)}`;
+
+    const storedWeekly = loadWinnersSnapshot(weekKey);
+    if (storedWeekly) {
+      setWeeklyWinners(storedWeekly);
+    } else {
+      const snapshot = computePeriodWinners(dailyScores, weekStart, weekEnd, 'week');
+      window.localStorage.setItem(weekKey, JSON.stringify(snapshot));
+      setWeeklyWinners(snapshot);
+    }
+
+    const storedMonthly = loadWinnersSnapshot(monthKey);
+    if (storedMonthly) {
+      setMonthlyWinners(storedMonthly);
+    } else {
+      const snapshot = computePeriodWinners(dailyScores, monthStart, monthEnd, 'month');
+      window.localStorage.setItem(monthKey, JSON.stringify(snapshot));
+      setMonthlyWinners(snapshot);
+    }
+  }, [dailyScores, referenceDate]);
+
   const buildLeaderboard = useCallback(
     (period: 'personal' | 'today' | 'week' | 'month' | 'all') => {
       const periodMultiplier = {
-        personal: 1.1,
+        personal: 4.2,
         today: 1,
         week: 4.2,
         month: 12.5,
@@ -873,6 +1099,51 @@ export default function AcerChallengeGame() {
     }
   };
 
+  const renderWinnersPanel = (title: string, snapshot: PeriodWinners | null) => {
+    if (!snapshot?.overall) return null;
+    const [first, second, third] = snapshot.overallTop;
+    return (
+      <div className="winnersBlock">
+        <div className="winnersTitle">{title}</div>
+        <div className="podium">
+          <div className="podiumSlot silver">
+            <div className="medal">🥈</div>
+            <div className="podiumName">{second?.name ?? '—'}</div>
+            <div className="podiumScore">{second?.score ?? 0}</div>
+          </div>
+          <div className="podiumSlot gold">
+            <div className="medal">🥇</div>
+            <div className="podiumName">{first?.name ?? '—'}</div>
+            <div className="podiumScore">{first?.score ?? 0}</div>
+          </div>
+          <div className="podiumSlot bronze">
+            <div className="medal">🥉</div>
+            <div className="podiumName">{third?.name ?? '—'}</div>
+            <div className="podiumScore">{third?.score ?? 0}</div>
+          </div>
+        </div>
+        <div className="winnersGroups">
+          {AGE_BANDS.map((band) => (
+            <div key={band} className="winnersGroup">
+              <div className="winnersGroupTitle">{band}</div>
+              <ol className="winnersList">
+                {snapshot.ageBands[band]?.length ? (
+                  snapshot.ageBands[band].map((entry, index) => (
+                    <li key={`${band}-${entry.name}`}>
+                      {index + 1}. {entry.name} <span className="muted">{entry.score}</span>
+                    </li>
+                  ))
+                ) : (
+                  <li className="muted">No scores yet.</li>
+                )}
+              </ol>
+            </div>
+          ))}
+        </div>
+      </div>
+    );
+  };
+
   return (
     <>
       {!hasStarted ? (
@@ -896,9 +1167,14 @@ export default function AcerChallengeGame() {
           <img
             className="headerLogo"
             src="/images/acer-can-winner-logo.png"
-            alt="Acer Challenge logo"
+            alt="Acer Challenge"
             loading="eager"
           />
+          {profile ? (
+            <button type="button" className="btnGhost" onClick={() => logout(false)}>
+              Logout
+            </button>
+          ) : null}
         </div>
       </div>
 
@@ -910,6 +1186,8 @@ export default function AcerChallengeGame() {
               <p className="muted">
                 Usernames are public, email stays private. No real names, no social profiles, and no chat.
               </p>
+              {statusMessage ? <div className="formNotice">{statusMessage}</div> : null}
+              {lockMessage ? <div className="formError">{lockMessage}</div> : null}
               <form className="registrationForm" onSubmit={handleRegisterSubmit}>
                 <label htmlFor="username">Username</label>
                 <input
@@ -918,6 +1196,7 @@ export default function AcerChallengeGame() {
                   autoComplete="off"
                   placeholder="Nickname only"
                   value={registrationData.username}
+                  disabled={isLocked}
                   onChange={(event) =>
                     setRegistrationData((prev) => ({ ...prev, username: event.target.value }))
                   }
@@ -930,6 +1209,7 @@ export default function AcerChallengeGame() {
                   autoComplete="off"
                   placeholder="you@example.com"
                   value={registrationData.email}
+                  disabled={isLocked}
                   onChange={(event) =>
                     setRegistrationData((prev) => ({ ...prev, email: event.target.value }))
                   }
@@ -939,6 +1219,7 @@ export default function AcerChallengeGame() {
                 <select
                   id="ageBand"
                   value={registrationData.ageBand}
+                  disabled={isLocked}
                   onChange={(event) =>
                     setRegistrationData((prev) => ({ ...prev, ageBand: event.target.value as AgeBand }))
                   }
@@ -951,7 +1232,9 @@ export default function AcerChallengeGame() {
                 </select>
 
                 {registrationError ? <div className="formError">{registrationError}</div> : null}
-                <button type="submit">Register</button>
+                <button type="submit" disabled={isLocked}>
+                  Register
+                </button>
               </form>
             </div>
           </div>
@@ -1066,7 +1349,9 @@ export default function AcerChallengeGame() {
                       {roundResult.bestSolution ? (
                         <>
                           <div
-                            className={`bestAnswerValue${roundResult.bestSolution.diff === 0 ? ' isExact' : ''}`}
+                            className={`bestAnswerValue${
+                              roundResult.bestSolution.diff === 0 ? ' isExact exactValue' : ''
+                            }`}
                           >
                             {roundResult.bestSolution.value}
                           </div>
@@ -1113,7 +1398,10 @@ export default function AcerChallengeGame() {
                   </div>
                   <div className="leaderboardGrid">
                     {[
-                      { key: 'personal', label: 'Personal best' },
+                      {
+                        key: 'personal',
+                        label: `Personal best (week of ${getISODateKey(startOfWeekUTC(referenceDate))})`
+                      },
                       { key: 'today', label: 'Today' },
                       { key: 'week', label: 'This week' },
                       { key: 'month', label: 'This month' },
@@ -1145,6 +1433,21 @@ export default function AcerChallengeGame() {
                   </div>
                   <div className="benchmarkLine">Acer benchmark today: {acerBenchmarkScore}</div>
                 </div>
+
+                {(weeklyWinners || monthlyWinners) && (weeklyWinners?.overall || monthlyWinners?.overall) ? (
+                  <div className="statusBox winnersPanel">
+                    <div className="leaderboardHeader">
+                      <div>
+                        <b>WINNERS</b>
+                        <div className="smallNote">
+                          Weekly and 4-week snapshots are cached after each period ends.
+                        </div>
+                      </div>
+                    </div>
+                    {renderWinnersPanel('Weekly winners', weeklyWinners)}
+                    {renderWinnersPanel('Monthly winners', monthlyWinners)}
+                  </div>
+                ) : null}
               </div>
 
               <HowToPlay />
@@ -1157,7 +1460,42 @@ export default function AcerChallengeGame() {
         <div className="modalOverlay" role="dialog" aria-modal="true">
           <div className="modalCard">
             <p>Thanks for challenging Acer. See you tomorrow.</p>
-            <button type="button" onClick={() => setShowDailyCompleteModal(false)}>
+            <div className="modalActions">
+              <button type="button" onClick={() => setShowDailyCompleteModal(false)}>
+                OK
+              </button>
+              <button type="button" className="btnGhost" onClick={() => setShowDailyCompleteModal(false)}>
+                Stay
+              </button>
+              <button type="button" className="btnGhost" onClick={() => logout(true)}>
+                Logout now
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {showLogoutConfirm ? (
+        <div className="modalOverlay" role="dialog" aria-modal="true">
+          <div className="modalCard">
+            <p>You will be locked out until daily reset (midnight UTC). Continue?</p>
+            <div className="modalActions">
+              <button type="button" onClick={() => logout(true)}>
+                Yes
+              </button>
+              <button type="button" className="btnGhost" onClick={() => setShowLogoutConfirm(false)}>
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {showInactivityModal ? (
+        <div className="modalOverlay" role="dialog" aria-modal="true">
+          <div className="modalCard">
+            <p>Logged out due to inactivity. You will be locked until midnight UTC.</p>
+            <button type="button" onClick={() => setShowInactivityModal(false)}>
               OK
             </button>
           </div>

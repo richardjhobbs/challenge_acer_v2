@@ -14,7 +14,7 @@ export default function MatchPage({ params }: MatchPageProps) {
           <img
             className="headerLogo"
             src="/images/acer-can-winner-logo.png"
-            alt="Acer Challenge logo"
+            alt="Acer Challenge"
             loading="eager"
           />
         </div>

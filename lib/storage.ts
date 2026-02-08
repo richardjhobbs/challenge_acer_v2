@@ -1,8 +1,8 @@
 import type { ChallengeScore, DailyScore, UserProfile, HistoryItem } from './types';
 
 const HISTORY_KEY = 'acer_challenge_history_v2';
-const PROFILE_KEY = 'acer_challenge_profile_v2';
-const DAILY_SCORES_KEY = 'acer_challenge_daily_scores_v2';
+const PROFILE_KEY = 'acer_profile';
+const DAILY_SCORES_KEY = 'acer_daily_scores';
 const ACER_BENCHMARK_KEY = 'acer_challenge_acer_benchmark_v2';
 
 export function loadHistory(): HistoryItem[] {
