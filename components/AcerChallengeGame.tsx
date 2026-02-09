@@ -101,13 +101,6 @@ function getLockedUntil(): Date | null {
 
 const formatUtcDateTime = (date: Date) => date.toUTCString();
 
-const MOCK_PLAYERS: Array<{ name: string; ageBand: AgeBand; baseScore: number }> = [
-  { name: 'Nova', ageBand: '11–13', baseScore: 320 },
-  { name: 'Rook', ageBand: '14–16', baseScore: 290 },
-  { name: 'Echo', ageBand: '8–10', baseScore: 240 },
-  { name: 'Quill', ageBand: '16+', baseScore: 355 },
-  { name: 'Pulse', ageBand: '14–16', baseScore: 270 }
-];
 
 const getMonthKey = (date: Date) =>
   `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, '0')}`;
@@ -117,9 +110,7 @@ const isDateInRange = (dateKey: string, start: Date, end: Date) => {
   return date >= start && date < end;
 };
 
-const mockScoreForPeriod = (period: 'week' | 'month') => (period === 'week' ? 4.2 : 12.5);
-
-const buildPeriodTotals = (scores: DailyScore[], start: Date, end: Date, period: 'week' | 'month') => {
+const buildPeriodTotals = (scores: DailyScore[], start: Date, end: Date) => {
   const totals = new Map<string, WinnerEntry>();
   scores
     .filter((item) => isDateInRange(item.dateKey, start, end))
@@ -132,25 +123,11 @@ const buildPeriodTotals = (scores: DailyScore[], start: Date, end: Date, period:
         score: nextScore
       });
     });
-  MOCK_PLAYERS.forEach((player) => {
-    if (!totals.has(player.name)) {
-      totals.set(player.name, {
-        name: player.name,
-        ageBand: player.ageBand,
-        score: Math.round(player.baseScore * mockScoreForPeriod(period))
-      });
-    }
-  });
   return Array.from(totals.values());
 };
 
-const computePeriodWinners = (
-  scores: DailyScore[],
-  periodStart: Date,
-  periodEnd: Date,
-  period: 'week' | 'month'
-): PeriodWinners => {
-  const entries = buildPeriodTotals(scores, periodStart, periodEnd, period);
+const computePeriodWinners = (scores: DailyScore[], periodStart: Date, periodEnd: Date): PeriodWinners => {
+  const entries = buildPeriodTotals(scores, periodStart, periodEnd);
   const overallTop = entries.sort((a, b) => b.score - a.score).slice(0, 3);
   const ageBands = AGE_BANDS.reduce((acc, band) => {
     acc[band] = entries.filter((entry) => entry.ageBand === band).sort((a, b) => b.score - a.score).slice(0, 3);
@@ -593,41 +570,6 @@ export default function AcerChallengeGame() {
 
   const referenceDate = useMemo(() => parseDateKey(todayKey), [todayKey]);
 
-  const userScoresByPeriod = useMemo(() => {
-    if (!profile) {
-      return {
-        today: null,
-        week: null,
-        month: null
-      };
-    }
-    const userEntries = dailyScores.filter((item) => item.username === profile.username);
-    if (!userEntries.length) {
-      return {
-        today: null,
-        week: null,
-        month: null
-      };
-    }
-
-    const todayEntry = userEntries.find((item) => item.dateKey === todayKey);
-    const weekStart = startOfWeekUTC(referenceDate);
-    const weekEnd = addDaysUTC(weekStart, 7);
-    const monthStart = startOf4WeekPeriodUTC(referenceDate);
-    const monthEnd = addDaysUTC(monthStart, 28);
-    const weekTotal = userEntries
-      .filter((item) => isDateInRange(item.dateKey, weekStart, weekEnd))
-      .reduce((sum, item) => sum + item.totalScore, 0);
-    const monthTotal = userEntries
-      .filter((item) => isDateInRange(item.dateKey, monthStart, monthEnd))
-      .reduce((sum, item) => sum + item.totalScore, 0);
-    return {
-      today: todayEntry?.totalScore ?? null,
-      week: weekTotal,
-      month: monthTotal
-    };
-  }, [dailyScores, profile, referenceDate, todayKey]);
-
   useEffect(() => {
     if (typeof window === 'undefined') return;
     const weekStart = startOfWeekUTC(referenceDate);
@@ -641,7 +583,7 @@ export default function AcerChallengeGame() {
     if (storedWeekly) {
       setWeeklyWinners(storedWeekly);
     } else {
-      const snapshot = computePeriodWinners(dailyScores, weekStart, weekEnd, 'week');
+      const snapshot = computePeriodWinners(dailyScores, weekStart, weekEnd);
       window.localStorage.setItem(weekKey, JSON.stringify(snapshot));
       setWeeklyWinners(snapshot);
     }
@@ -650,7 +592,7 @@ export default function AcerChallengeGame() {
     if (storedMonthly) {
       setMonthlyWinners(storedMonthly);
     } else {
-      const snapshot = computePeriodWinners(dailyScores, monthStart, monthEnd, 'month');
+      const snapshot = computePeriodWinners(dailyScores, monthStart, monthEnd);
       window.localStorage.setItem(monthKey, JSON.stringify(snapshot));
       setMonthlyWinners(snapshot);
     }
@@ -658,30 +600,34 @@ export default function AcerChallengeGame() {
 
   const buildLeaderboard = useCallback(
     (period: 'today' | 'week' | 'month') => {
-      const periodMultiplier = {
-        today: 1,
-        week: 4.2,
-        month: 12.5
-      } as const;
-      const mockEntries: LeaderboardEntry[] = MOCK_PLAYERS.map((player) => ({
-        name: player.name,
-        ageBand: player.ageBand,
-        score: Math.round(player.baseScore * periodMultiplier[period])
-      }));
-      const entries = [...mockEntries];
-      const userScore = userScoresByPeriod[period];
-      if (profile && typeof userScore === 'number') {
-        entries.push({
-          name: profile.username,
-          ageBand: profile.ageBand,
-          score: userScore,
-          isUser: true
+      const totals = new Map<string, LeaderboardEntry>();
+      const addScore = (item: DailyScore) => {
+        const existing = totals.get(item.username);
+        const nextScore = (existing?.score ?? 0) + item.totalScore;
+        totals.set(item.username, {
+          name: item.username,
+          ageBand: item.ageBand,
+          score: nextScore,
+          isUser: profile?.username === item.username || undefined
         });
+      };
+      if (period === 'today') {
+        dailyScores.filter((item) => item.dateKey === todayKey).forEach(addScore);
+      } else if (period === 'week') {
+        const weekStart = startOfWeekUTC(referenceDate);
+        const weekEnd = addDaysUTC(weekStart, 7);
+        dailyScores.filter((item) => isDateInRange(item.dateKey, weekStart, weekEnd)).forEach(addScore);
+      } else {
+        const monthStart = startOf4WeekPeriodUTC(referenceDate);
+        const monthEnd = addDaysUTC(monthStart, 28);
+        dailyScores.filter((item) => isDateInRange(item.dateKey, monthStart, monthEnd)).forEach(addScore);
       }
-      const filtered = entries.filter((entry) => ageFilter === 'All' || entry.ageBand === ageFilter);
+      const filtered = Array.from(totals.values()).filter(
+        (entry) => ageFilter === 'All' || entry.ageBand === ageFilter
+      );
       return filtered.sort((a, b) => b.score - a.score).slice(0, 10);
     },
-    [ageFilter, profile, userScoresByPeriod]
+    [ageFilter, dailyScores, profile, referenceDate, todayKey]
   );
 
   const createTileId = useCallback(() => {
